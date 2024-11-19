@@ -1,0 +1,249 @@
+library(dplyr)
+library(stringr)
+library(rsample)
+library(tidyr)
+library(wordcloud)
+library(RColorBrewer)
+library(ggplot2)
+library(stopwords)
+library(yardstick)
+
+setwd("C:/Users/jtgb0/OneDrive/Ambiente de Trabalho")
+data <- read.csv("spam.csv")
+
+set.seed(123)
+
+# Preprocess the data (before cleaning)
+data <- data %>%
+  tidyr::unite(col = "msg", 2:5, sep = " ", na.rm = TRUE) %>% 
+  rename("label" = v1)
+
+data$msg <- iconv(data$msg, from = "latin1", to = "UTF-8", sub = "byte")
+
+
+#################################################################################
+#HISTOGRAM 
+
+# Calculate percentage of ham and spam messages
+label_counts <- data %>%
+  count(label) %>%
+  mutate(percentage = n / sum(n) * 100)
+
+# Plot histogram of ham and spam percentages with labels on top
+ggplot(label_counts, aes(x = label, y = percentage, fill = label)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  scale_fill_manual(values = c("ham" = "green", "spam" = "red")) +
+  labs(title = "Percentage of Ham and Spam Messages",
+       x = "Message Type",
+       y = "Percentage (%)") +
+  ylim(0, 100) +                 # Set y-axis limits from 0 to 100
+  geom_text(aes(label = sprintf("%.1f%%", percentage)),  # Display percentage with one decimal
+            vjust = -0.3,                              # Adjust vertical position above bars
+            color = "black",                           # Set label color
+            size = 4) +                                # Set label text size
+  theme_minimal()
+#################################################################################
+#FREQUENCY PLOT
+
+
+# Check and handle missing or NA values in the text column
+data <- data %>%
+  mutate(
+    No_of_Characters = sapply(msg, function(x) ifelse(is.na(x), 0, nchar(x))),  
+    No_of_Words = sapply(strsplit(msg, "\\s+"), length),  
+    No_of_Sentences = sapply(strsplit(msg, "(?<=[.!?])\\s+", perl = TRUE), length))
+
+# Plot the word count frequency with lines and filled area for ham and spam
+ggplot(data, aes(x = No_of_Words, fill = label, color = label)) + 
+  geom_area(stat = "bin", binwidth = 1, position = "identity", alpha = 0.4) +  # Fill the area under the curve
+  geom_line(stat = "bin", binwidth = 1, size = 1.2) +  # Add the line on top of the filled area
+  scale_fill_manual(values = c("ham" = "green", "spam" = "red")) +  # Area color
+  scale_color_manual(values = c("ham" = "darkgreen", "spam" = "darkred")) +  # Line color
+  labs(title = "Frequency Plot of Word Count for Ham and Spam Messages",
+       x = "Number of Words",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(legend.title = element_blank())  # Remove the legend title
+
+#################################################################################
+
+# --- Proceed with data processing and classification ---
+
+
+#REMOVE STOP WORDS
+data$msg_clean <- sapply(data$msg, function(x) {
+  words <- unlist(strsplit(x, "\\s+"))
+  words <- words[!words %in% stopwords("en")]  
+  paste(words, collapse = " ")
+})
+
+# Split the data into training and testing sets
+split <- initial_split(data, strata = label)
+train_data <- training(split)
+test_data <- testing(split)
+
+# Data cleaning function (for later processing)
+string_cleaner <- function(text_vector) {
+  tx <- text_vector %>%
+    str_replace_all("[^[:alnum:] ]+", "") %>%
+    str_to_lower() %>%
+    str_replace_all("\\b(http|www.+)\\b", "_url_") %>%
+    str_replace_all("\\b(\\d{7,})\\b", "_longnum_") %>%
+    str_split(" ")
+  
+  tx <- lapply(tx, function(x) x[nchar(x) > 1])
+  
+  tx
+}
+
+# Clean training data and create msg_list
+train_data <- train_data %>%
+  mutate(msg_list = string_cleaner(.$msg_clean))
+
+
+#################################################################################
+#WORDCLOUD
+
+spam_messages_train <- train_data %>%
+  filter(label == "spam") %>%
+  pull(msg)
+
+ham_messages_train <- train_data %>%
+  filter(label == "ham") %>%
+  pull(msg)
+
+spam_words_train <- unlist(str_split(spam_messages_train, "\\s+"))
+ham_words_train <- unlist(str_split(ham_messages_train, "\\s+"))
+
+
+# Create the word cloud for spam messages (without stopwords)
+wordcloud(spam_words_train, 
+          min.freq = 50,         
+          random.order = FALSE,  
+          colors = brewer.pal(8, "Reds"),  
+          scale = c(3, 0.5))
+
+# Create the word cloud for ham messages (without stopwords)
+wordcloud(ham_words_train, 
+          min.freq = 50,         
+          random.order = FALSE,  
+          colors = brewer.pal(8, "Greens"),  
+          scale = c(3, 0.5))
+#################################################################################
+
+
+# Create vocabulary of unique words
+vocab <- train_data %>%
+  select(msg_list) %>%
+  unlist() %>%
+  unique() %>%
+  enframe(name = NULL, value = "word")
+
+# Separate vocabulary by spam and ham messages
+ham_vocab <- train_data %>%
+  filter(label == "ham") %>%
+  select(msg_list) %>%
+  tibble::deframe() %>%
+  unlist()
+
+spam_vocab <- train_data %>%
+  filter(label == "spam") %>%
+  select(msg_list) %>%
+  tibble::deframe() %>%
+  unlist()
+
+# Count word frequencies in ham and spam categories
+vocab <- table(ham_vocab) %>%
+  tibble::as_tibble() %>%
+  rename(ham_n = n) %>%
+  left_join(vocab, ., by = c("word" = "ham_vocab"))
+
+vocab <- table(spam_vocab) %>%
+  tibble::as_tibble() %>%
+  rename(spam_n = n) %>%
+  left_join(vocab, ., by = c("word" = "spam_vocab"))
+
+# Calculate the number of unique words and category counts
+word_n <- c("unique" = nrow(vocab),
+            "ham" = length(ham_vocab),
+            "spam" = length(spam_vocab))
+
+# Calculate class probabilities
+class_probs <- prop.table(table(train_data$label))
+
+# Define function to calculate word probabilities with smoothing
+word_probabilities <- function(word_n, category_n, vocab_n, smooth = 1) {
+  prob <- (word_n + smooth) / (category_n + smooth * vocab_n)
+  prob
+}
+
+# Calculate word probabilities for each word in the vocabulary
+vocab <- vocab %>%
+  tidyr::replace_na(list(ham_n = 0, spam_n = 0)) %>%
+  rowwise() %>%
+  mutate(ham_prob = word_probabilities(
+    ham_n, word_n["ham"], word_n["unique"])) %>%
+  mutate(spam_prob = word_probabilities(
+    spam_n, word_n["spam"], word_n["unique"])) %>%
+  ungroup()
+
+
+
+# Define the classifier function based on Naive Bayes
+classifier <- function(msg, prob_df, ham_p = 0.5, spam_p = 0.5) {
+  clean_message <- string_cleaner(msg) %>% unlist()
+  
+  probs <- sapply(clean_message, function(x) {
+    filter(prob_df, word == x) %>%
+      select(ham_prob, spam_prob)
+  })
+  
+  if (!is.null(dim(probs))) {
+    ham_prob <- prod(unlist(as.numeric(probs[1, ])), na.rm = TRUE)
+    spam_prob <- prod(unlist(as.numeric(probs[2, ])), na.rm = TRUE)
+    ham_prob <- ham_p * ham_prob
+    spam_prob <- spam_p * spam_prob
+    
+    if (ham_prob > spam_prob) {
+      classification <- "ham"
+    } else if (ham_prob < spam_prob) {
+      classification <- "spam"
+    } else {
+      classification <- "unknown"
+    }
+  } else {
+    classification <- "unknown"
+  }
+  
+  classification
+}
+
+# Apply the classifier to the test data
+spam_classification <- sapply(test_data$msg_clean,
+                              function(x) classifier(x, vocab, class_probs["ham"],
+                                                     class_probs["spam"]), USE.NAMES = FALSE)
+
+# Define factor levels for the results
+fct_levels <- c("ham", "spam", "unknown")
+
+# Add predictions to the test data
+test_data <- test_data %>%
+  mutate(label = factor(.$label, levels = fct_levels),
+         .pred = factor(spam_classification, levels = fct_levels))
+
+# Performance metrics
+performance <- metrics(test_data, label, .pred)
+
+# Print performance metrics
+print(performance)
+
+# Confusion matrix
+table(paste("actual", test_data$label), paste("pred", test_data$.pred))
+
+# Additional metrics for classifying everything as "ham"
+test_data %>% 
+  mutate(all_ham = "ham") %>% 
+  mutate(all_ham = factor(all_ham, levels = fct_levels)) %>% 
+  yardstick::metrics(label, all_ham)
+
+
