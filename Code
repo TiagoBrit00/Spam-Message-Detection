@@ -8,7 +8,6 @@ library(ggplot2)
 library(stopwords)
 library(yardstick)
 
-setwd("C:/Users/jtgb0/OneDrive/Ambiente de Trabalho")
 data <- read.csv("spam.csv")
 
 set.seed(123)
@@ -18,6 +17,7 @@ data <- data %>%
   tidyr::unite(col = "msg", 2:5, sep = " ", na.rm = TRUE) %>% 
   rename("label" = v1)
 
+# Change character encoding for more consistent results
 data$msg <- iconv(data$msg, from = "latin1", to = "UTF-8", sub = "byte")
 
 
@@ -42,9 +42,9 @@ ggplot(label_counts, aes(x = label, y = percentage, fill = label)) +
             color = "black",                           # Set label color
             size = 4) +                                # Set label text size
   theme_minimal()
+
 #################################################################################
 #FREQUENCY PLOT
-
 
 # Check and handle missing or NA values in the text column
 data <- data %>%
@@ -55,22 +55,21 @@ data <- data %>%
 
 # Plot the word count frequency with lines and filled area for ham and spam
 ggplot(data, aes(x = No_of_Words, fill = label, color = label)) + 
-  geom_area(stat = "bin", binwidth = 1, position = "identity", alpha = 0.4) +  # Fill the area under the curve
-  geom_line(stat = "bin", binwidth = 1, size = 1.2) +  # Add the line on top of the filled area
-  scale_fill_manual(values = c("ham" = "green", "spam" = "red")) +  # Area color
-  scale_color_manual(values = c("ham" = "darkgreen", "spam" = "darkred")) +  # Line color
+  geom_area(stat = "bin", binwidth = 1, position = "identity", alpha = 0.4) +  
+  geom_line(stat = "bin", binwidth = 1, size = 1.2) +  
+  scale_fill_manual(values = c("ham" = "green", "spam" = "red")) +  
+  scale_color_manual(values = c("ham" = "darkgreen", "spam" = "darkred")) + 
   labs(title = "Frequency Plot of Word Count for Ham and Spam Messages",
        x = "Number of Words",
        y = "Frequency") +
   theme_minimal() +
-  theme(legend.title = element_blank())  # Remove the legend title
+  theme(legend.title = element_blank())  
 
 #################################################################################
 
-# --- Proceed with data processing and classification ---
+# Data processing and classification 
 
-
-#REMOVE STOP WORDS
+# Remove stop words
 data$msg_clean <- sapply(data$msg, function(x) {
   words <- unlist(strsplit(x, "\\s+"))
   words <- words[!words %in% stopwords("en")]  
@@ -186,7 +185,6 @@ vocab <- vocab %>%
   mutate(spam_prob = word_probabilities(
     spam_n, word_n["spam"], word_n["unique"])) %>%
   ungroup()
-
 
 
 # Define the classifier function based on Naive Bayes
